@@ -1,0 +1,35 @@
+# ─── Python byte‑code ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ─── Virtual‑environments (Poetry, venv, pipenv) ───────────────────
+.venv/
+.env/
+# Poetry’s global env cache (Windows default path pattern)
+/Users/*/.virtualenvs/
+
+# ─── Packaging / distribution ─────────────────────────────────────
+build/
+dist/
+*.egg-info/
+
+# ─── Test & coverage artifacts ────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ─── Static analysis caches ───────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+
+# ─── Editor / IDE folders ─────────────────────────────────────────
+.vscode/
+.idea/
+
+# ─── OS generated files ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Logs ─────────────────────────────────────────────────────────
+*.log

@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "intrabus"
+version = "0.1.0"
+description = "Lightweight ZeroMQ pub/sub + req/rep message bus for single‑host threaded / multi‑process Python apps"
+authors = ["BuilderCrafter"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/BuilderCrafter/intrabus"
+keywords = ["zeromq", "pubsub", "rpc", "message-bus", "threading"]
+packages = [{ include = "intrabus" }]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pyzmq = "^26.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+black = "^24.0"
+isort = "^5.13"
+flake8 = "^7.0"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
