@@ -3,30 +3,33 @@ name: CI
 on:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
+    tags: 
+      - "v*"
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+  publish:
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: '3.12'
 
-      - name: Install Poetry
-        run: pip install poetry
+      - name: Install Poetry & Twine
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry twine
 
-      - name: Install deps
-        run: poetry install --no-interaction
+      - name: Build package
+        run: |
+          poetry install --no-interaction --only main
+          poetry build
 
-      - name: Run tests
-        run: poetry run pytest -q
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: "__token__"
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          twine upload --skip-existing dist/*

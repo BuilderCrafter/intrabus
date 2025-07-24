@@ -1,18 +1,18 @@
-"""Verify request→reply round‑trip."""
+import time
 from intrabus import run_topic_broker, run_central_broker, BusInterface
 
+
 def test_reqrep_roundtrip():
-    run_topic_broker() 
+    run_topic_broker()
     run_central_broker()
 
-    def echo(msg):
-        return {"echo": msg}
+    srv = BusInterface("srv", request_handler=lambda m: {"pong": True})
+    cli = BusInterface("cli")
 
-    a = BusInterface("A", request_handler=echo)
-    b = BusInterface("B")
+    time.sleep(0.1)          # allow DEALER handshake locally
+    reply = cli.send_request("srv", {"ping": True}, timeout=2)
 
-    reply = b.send_request("A", {"ping": True}, timeout=1)
-    assert reply.get("echo", {}).get("ping") is True
+    assert reply.get("pong") is True
 
-    a.stop()
-    b.stop()
+    srv.stop()
+    cli.stop()

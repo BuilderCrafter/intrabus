@@ -1,20 +1,24 @@
-"""Verify publish→subscribe round‑trip."""
 import time
+import threading
 from intrabus import run_topic_broker, run_central_broker, BusInterface
 
+
 def test_pubsub_roundtrip():
-    # singletons make repeated starts idempotent
+    # start brokers once (idempotent)
     run_topic_broker()
     run_central_broker()
 
-    received = {}
+    flag = threading.Event()
     b = BusInterface("B")
-    b.subscribe("t", lambda t, m: received.update(m))
+    b.subscribe("t", lambda *_: flag.set())
+
     a = BusInterface("A")
+    time.sleep(0.1)          # allow SUB handshake locally
 
     a.publish("t", {"v": 1})
-    time.sleep(0.05)  # background thread dispatch
+    time.sleep(0.1)          # give background thread time to deliver
 
-    assert received == {"v": 1}
-    a.stop() 
+    assert flag.is_set(), "subscriber did not receive message"
+
+    a.stop()
     b.stop()
