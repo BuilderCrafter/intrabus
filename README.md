@@ -5,7 +5,7 @@
 ## Quick Start
 
 ```bash
-pip install --index-url https://test.pypi.org/simple/ intrabus
+pip install intrabus
 
 ```python
 from intrabus import BusInterface, run_topic_broker, run_central_broker
