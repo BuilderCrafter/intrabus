@@ -1,10 +1,8 @@
-name: CI
+name: Publish intrabus to PyPI on tag
 
 on:
   push:
-    branches: ["main"]
-    tags: 
-      - "v*"
+    tags: ['v*']            # v0.1.0, v1.0.0-rc1, etc.
 
 jobs:
   publish:
@@ -22,12 +20,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install poetry twine
 
-      - name: Build package
+      - name: Build wheel + sdist
         run: |
           poetry install --no-interaction --only main
           poetry build
 
-      - name: Publish to PyPI
+      - name: Upload to PyPI
         env:
           TWINE_USERNAME: "__token__"
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
