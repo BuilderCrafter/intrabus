@@ -3,6 +3,7 @@ name: Publish intrabus to PyPI on tag
 on:
   push:
     tags: ['v*']            # v0.1.0, v1.0.0-rc1, etc.
+  workflow_dispatch:
 
 jobs:
   publish:
