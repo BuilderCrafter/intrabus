@@ -4,8 +4,6 @@
 
 ## Quick Start
 
-Install from TestPyPI while the project is in pre‑release:
-
 ```bash
 pip install --index-url https://test.pypi.org/simple/ intrabus
 
