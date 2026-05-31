@@ -6,6 +6,7 @@ Provides:
 
 ZeroMQ socket rules are hidden behind background threads.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,16 +14,19 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from queue import Empty, Queue
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 import zmq
 
 from .config import (
     FORWARDER_PUB_ADDR,
     FORWARDER_SUB_ADDR,
+    INTRABUS_NODE_MODULE,
     REPREQ_DEALER_ADDR,
 )
+from .stats import StatsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +52,16 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         pubsub_forwarder_sub_addr: str = FORWARDER_SUB_ADDR,
         pubsub_forwarder_pub_addr: str = FORWARDER_PUB_ADDR,
         reqrep_broker_addr: str = REPREQ_DEALER_ADDR,
-        request_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        request_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        auto_register: bool = True,
+        enable_heartbeat: bool = True,
+        heartbeat_interval: float = 2.0,
+        stats: StatsCollector | None = None,
     ) -> None:
         self.module_name = module_name
         self.request_handler = request_handler
-        self._ctx = zmq.Context.instance()
+        self._ctx = zmq.Context()
+        self.stats = stats
 
         # PUB → TopicBroker
         self._pub = self._ctx.socket(zmq.PUB)
@@ -72,7 +81,7 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         self._sub_running = True
         self._rr_running = True
         self._tx_queue: Queue[list[bytes]] = Queue()
-        self._pending: Dict[str, dict[str, Any]] = {}
+        self._pending: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
         # threads
@@ -81,44 +90,80 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         self._io_thr = threading.Thread(target=self._io_loop, daemon=True)
         self._io_thr.start()
 
+        # Auto register node
+        self.auto_register = auto_register
+        if self.auto_register:
+            self._register_with_node()
+
+        # Heartbeat
+        self.enable_heartbeat = enable_heartbeat
+        self.heartbeat_interval = heartbeat_interval
+        self._heartbeat_running = False
+        self._heartbeat_thr: threading.Thread | None = None
+
+        if self.enable_heartbeat:
+            self._start_heartbeat()
+
     # ─────────────────────────────── Pub/Sub ──────────────────────────────
     def publish(self, topic: str, message: Any) -> None:
-        self._pub.send_multipart(
-            [topic.encode(), json.dumps(message).encode()]
-        )
+        self._pub.send_multipart([topic.encode(), json.dumps(message).encode()])
 
     def subscribe(self, topic: str, callback: Callable[[str, Any], None]) -> None:
         self._sub.setsockopt_string(zmq.SUBSCRIBE, topic)
         self._sub_callbacks.setdefault(topic, []).append(callback)
 
     def _sub_loop(self) -> None:
+        poller = zmq.Poller()
+        poller.register(self._sub, zmq.POLLIN)
+
         while self._sub_running:
+            try:
+                socks = dict(poller.poll(100))
+            except zmq.error.ContextTerminated:
+                break
+            except zmq.error.ZMQError:
+                if self._sub_running:
+                    logger.exception("Subscriber poll error")
+                break
+
+            if self._sub not in socks:
+                continue
+
             try:
                 topic_b, data_b = self._sub.recv_multipart()
             except zmq.error.ContextTerminated:
                 break
+            except zmq.error.ZMQError:
+                if self._sub_running:
+                    logger.exception("Subscriber receive error")
+                break
+
             topic = topic_b.decode()
             try:
                 payload = json.loads(data_b)
             except json.JSONDecodeError:
                 payload = {"raw": data_b.decode()}
+
             for cb in self._sub_callbacks.get(topic, []):
                 try:
                     cb(topic, payload)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("Subscriber callback error")
 
     # ─────────────────────────────── Req/Rep ──────────────────────────────
     def send_request(
         self,
         target: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         *,
         timeout: float = 1.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         corr = str(uuid.uuid4())
         payload |= {"correlationId": corr, "sender": self.module_name}
         frames = [b"", target.encode(), b"", json.dumps(payload).encode()]
+
+        started_at = time.perf_counter()
+
         self._tx_queue.put(frames)
 
         evt = threading.Event()
@@ -127,7 +172,26 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         if not evt.wait(timeout):
             with self._lock:
                 self._pending.pop(corr, None)
+
+            if self.stats is not None:
+                self.stats.record_timeout(
+                    module_name=self.module_name,
+                    target=target,
+                    correlation_id=corr,
+                )
+
             return {"error": "timeout", "correlationId": corr}
+
+        latency_ms = (time.perf_counter() - started_at) * 1000
+
+        if self.stats is not None:
+            self.stats.record_latency(
+                latency_ms=latency_ms,
+                sender=self.module_name,
+                target=target,
+                correlation_id=corr,
+            )
+
         with self._lock:
             reply = self._pending.pop(corr)["reply"]
         return reply
@@ -135,28 +199,40 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
     def _handle_rr_frames(self, frames: list[bytes]) -> None:
         if len(frames) < 4:
             return
+
         sender = frames[1].decode()
         raw = frames[3].decode()
+
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             msg = {"raw": raw}
+
         corr = msg.get("correlationId")
 
-        # is it a reply?
+        # Is it a reply to a request this module sent?
         with self._lock:
             if corr in self._pending:
                 self._pending[corr]["reply"] = msg
                 self._pending[corr]["evt"].set()
                 return
 
-        # else treat as new request
+        # Otherwise treat it as a new incoming request.
         if self.request_handler is None:
             return
+
         try:
             reply = self.request_handler(msg) or {}
         except Exception as exc:  # noqa: BLE001
+            if self.stats is not None:
+                self.stats.record_error(
+                    module_name=self.module_name,
+                    error=str(exc),
+                    correlation_id=corr,
+                )
+
             reply = {"error": str(exc)}
+
         reply |= {"correlationId": corr, "sender": self.module_name}
         self._tx_queue.put([b"", sender.encode(), b"", json.dumps(reply).encode()])
 
@@ -178,17 +254,112 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
             if self._rr in socks:
                 self._handle_rr_frames(self._rr.recv_multipart())
 
+    # ───────────────────────────── Registration ────────────────────────────
+    def _register_with_node(self) -> None:
+        """Best-effort registration with the local communication node."""
+        reply = self.send_request(
+            INTRABUS_NODE_MODULE,
+            {
+                "command": "module.register",
+                "moduleName": self.module_name,
+                "capabilities": ["pubsub", "reqrep"],
+            },
+            timeout=0.3,
+        )
+
+        if reply.get("error") == "timeout":
+            logger.debug("[%s] communication node not available", self.module_name)
+            return
+
+        if reply.get("ok") is False:
+            logger.warning(
+                "[%s] registration failed: %s",
+                self.module_name,
+                reply.get("error"),
+            )
+
+    def _unregister_from_node(self) -> None:
+        """Best-effort unregister from the local communication node."""
+        reply = self.send_request(
+            INTRABUS_NODE_MODULE,
+            {
+                "command": "module.unregister",
+                "moduleName": self.module_name,
+            },
+            timeout=0.3,
+        )
+
+        if reply.get("error") == "timeout":
+            logger.debug("[%s] communication node not available", self.module_name)
+            return
+
+    # ────────────────────────────── Heartbeat ──────────────────────────────
+    def _start_heartbeat(self) -> None:
+        """Start the heartbeat background thread."""
+        if self._heartbeat_running:
+            return
+
+        self._heartbeat_running = True
+        self._heartbeat_thr = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thr.start()
+
+    def _heartbeat_loop(self) -> None:
+        """Periodically notify the communication node that this module is alive."""
+        while self._heartbeat_running:
+            time.sleep(self.heartbeat_interval)
+
+            if not self._heartbeat_running:
+                break
+
+            self._send_heartbeat()
+
+    def _send_heartbeat(self) -> None:
+        """Best-effort heartbeat to the local communication node."""
+        reply = self.send_request(
+            INTRABUS_NODE_MODULE,
+            {
+                "command": "module.heartbeat",
+                "moduleName": self.module_name,
+            },
+            timeout=0.3,
+        )
+
+        if reply.get("error") == "timeout":
+            logger.debug(
+                "[%s] heartbeat skipped; communication node not available",
+                self.module_name,
+            )
+            return
+
+        if reply.get("ok") is False:
+            logger.warning(
+                "[%s] heartbeat failed: %s",
+                self.module_name,
+                reply.get("error"),
+            )
+
     # ─────────────────────────────── Cleanup ──────────────────────────────
     def stop(self) -> None:
+        self._heartbeat_running = False
+
+        if self._heartbeat_thr and self._heartbeat_thr.is_alive():
+            self._heartbeat_thr.join(timeout=1.0)
+
+        if self.auto_register:
+            self._unregister_from_node()
+
         self._sub_running = False
         self._rr_running = False
-        time.sleep(0.05)
+
         for thr in (self._sub_thr, self._io_thr):
             if thr.is_alive():
-                thr.join(timeout=0.5)
+                thr.join(timeout=1.0)
+
         self._pub.close(0)
         self._sub.close(0)
         self._rr.close(0)
+        self._ctx.destroy(linger=0)
+
         logger.info("[%s] interface stopped", self.module_name)
 
     # allow `with` usage ----------------------------------------------------

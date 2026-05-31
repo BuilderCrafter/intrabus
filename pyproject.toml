@@ -1,24 +1,58 @@
-[tool.poetry]
+[project]
 name = "intrabus"
-version = "0.1.0"
-description = "Lightweight ZeroMQ pub/sub + req/rep message bus for single‑host threaded / multi‑process Python apps"
-authors = ["BuilderCrafter"]
-license = "MIT"
+version = "0.2.0"
+description = "General-purpose ZeroMQ communication node with pub/sub, request/reply, registry, heartbeats, stats, and diagnostics"
 readme = "README.md"
-repository = "https://github.com/BuilderCrafter/intrabus"
-keywords = ["zeromq", "pubsub", "rpc", "message-bus", "threading"]
-packages = [{ include = "intrabus" }]
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "BuilderCrafter" }]
+keywords = [
+    "zeromq",
+    "pubsub",
+    "rpc",
+    "message-bus",
+    "communication-node",
+    "diagnostics",
+    "monitoring",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "pyzmq>=26.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-pyzmq = "^26.0"
+[project.urls]
+Repository = "https://github.com/BuilderCrafter/intrabus"
+Issues = "https://github.com/BuilderCrafter/intrabus/issues"
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.0"
-black = "^24.0"
-isort = "^5.13"
-flake8 = "^7.0"
+[dependency-groups]
+dev = [
+    "build>=1.2.0",
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+    "twine>=5.0.0",
+]
 
 [build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["intrabus"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
