@@ -1,19 +1,37 @@
 import time
-from intrabus import run_topic_broker, run_central_broker, BusInterface
+
+from intrabus import BusInterface, CentralBroker
 
 
 def test_reqrep_roundtrip():
-    run_topic_broker()
-    run_central_broker()
+    broker = CentralBroker(bind="tcp://127.0.0.1:15660")
+    broker.start()
 
-    srv = BusInterface("srv", request_handler=lambda m: {"pong": True})
-    cli = BusInterface("cli")
+    srv = None
+    cli = None
 
-    time.sleep(0.1)          # allow DEALER handshake locally
-    reply = cli.send_request("srv", {"ping": True}, timeout=2)
+    try:
+        srv = BusInterface(
+            "srv",
+            reqrep_broker_addr="tcp://127.0.0.1:15660",
+            request_handler=lambda m: {"pong": True},
+            auto_register=False,
+            enable_heartbeat=False,
+        )
+        cli = BusInterface(
+            "cli",
+            reqrep_broker_addr="tcp://127.0.0.1:15660",
+            auto_register=False,
+            enable_heartbeat=False,
+        )
 
-    assert reply.get("pong") is True
+        time.sleep(0.1)  # allow DEALER handshake locally
+        reply = cli.send_request("srv", {"ping": True}, timeout=2)
 
-    srv.stop()
-    cli.stop()
-    
+        assert reply.get("pong") is True
+    finally:
+        if srv is not None:
+            srv.stop()
+        if cli is not None:
+            cli.stop()
+        broker.stop()
