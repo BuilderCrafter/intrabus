@@ -237,6 +237,7 @@ class CommunicationNode:
 
     def _get_node_health(self, message: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds = message.get("timeoutSeconds", 5.0)
+        include_details = message.get("includeDetails") is True
 
         if not isinstance(timeout_seconds, int | float):
             timeout_seconds = 5.0
@@ -262,14 +263,46 @@ class CommunicationNode:
         else:
             status = "healthy"
 
-        return {
+        response = {
             "ok": True,
             "nodeId": self.node_id,
             "status": status,
             "staleModules": [module.module_name for module in stale_modules],
-            "registry": self.registry.to_dict(),
-            "stats": self.stats.to_dict(),
+            "summary": self._get_health_summary(diagnostics),
             "diagnostics": diagnostics,
+        }
+
+        if include_details:
+            response["registry"] = self.registry.to_dict()
+            response["stats"] = self.stats.to_dict()
+
+        return response
+
+    def _get_health_summary(self, diagnostics: dict[str, Any]) -> dict[str, Any]:
+        modules = self.registry.list_modules()
+        online_modules = [module for module in modules if module.status == "online"]
+        offline_modules = [module for module in modules if module.status == "offline"]
+        stats = self.stats.to_dict()
+
+        return {
+            "modules": {
+                "total": len(modules),
+                "online": len(online_modules),
+                "offline": len(offline_modules),
+            },
+            "stats": {
+                "totalMessages": stats["totalMessages"],
+                "totalRequests": stats["totalRequests"],
+                "totalReplies": stats["totalReplies"],
+                "totalTimeouts": stats["totalTimeouts"],
+                "totalErrors": stats["totalErrors"],
+                "totalEvents": stats["totalEvents"],
+                "totalDeliveryFailures": stats["totalDeliveryFailures"],
+            },
+            "diagnostics": {
+                "count": diagnostics["count"],
+                "severityCounts": diagnostics.get("severityCounts", {}),
+            },
         }
 
     def _reset_node_stats(self) -> dict[str, Any]:

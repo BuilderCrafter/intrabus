@@ -4,6 +4,15 @@ All notable changes to **intrabus** will be documented here.
 
 The project follows semantic versioning while it is in alpha. Public APIs may still evolve before `1.0.0`.
 
+## [0.2.1] - 2026-06-02
+
+### Changed
+
+- Changed `node.get_health` to return a compact monitoring-oriented payload by default.
+- Added `includeDetails=True` support to `node.get_health` for callers that need the full registry and raw stats payload.
+- Added diagnostic severity counts to diagnostics responses.
+- Grouped repeated timeout, handler-error, and delivery-failure events into higher-level diagnostics.
+
 ## [0.2.0] - 2026-05-31
 
 ### Added

@@ -41,6 +41,7 @@ def test_diagnostics_manager_reports_request_timeouts():
     data = diagnostics.to_dict()
 
     assert data["count"] == 1
+    assert data["severityCounts"]["warning"] == 1
     assert data["diagnostics"][0]["code"] == "REQUEST_TIMEOUT"
     assert data["diagnostics"][0]["severity"] == "warning"
     assert data["diagnostics"][0]["module"] == "client"
@@ -65,6 +66,7 @@ def test_diagnostics_manager_reports_handler_errors():
     data = diagnostics.to_dict()
 
     assert data["count"] == 1
+    assert data["severityCounts"]["error"] == 1
     assert data["diagnostics"][0]["code"] == "HANDLER_ERROR"
     assert data["diagnostics"][0]["severity"] == "error"
     assert data["diagnostics"][0]["module"] == "server"
@@ -93,3 +95,33 @@ def test_diagnostics_manager_reports_delivery_failures():
     assert data["diagnostics"][0]["code"] == "DELIVERY_FAILURE"
     assert data["diagnostics"][0]["severity"] == "error"
     assert data["diagnostics"][0]["module"] == "client"
+
+
+def test_diagnostics_manager_groups_repeated_stats_events():
+    registry = ModuleRegistry(node_id="test_node")
+    stats = StatsCollector()
+    diagnostics = DiagnosticsManager()
+
+    stats.record_timeout(
+        module_name="client",
+        target="server",
+        correlation_id="abc",
+    )
+    stats.record_timeout(
+        module_name="client",
+        target="server",
+        correlation_id="def",
+    )
+
+    diagnostics.refresh_from_runtime(
+        registry=registry,
+        stats=stats,
+    )
+
+    data = diagnostics.to_dict()
+    diagnostic = data["diagnostics"][0]
+
+    assert data["count"] == 1
+    assert diagnostic["code"] == "REQUEST_TIMEOUT"
+    assert diagnostic["metadata"]["count"] == 2
+    assert diagnostic["metadata"]["correlationIds"] == ["abc", "def"]

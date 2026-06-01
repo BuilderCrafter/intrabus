@@ -8,6 +8,8 @@ from typing import Any
 from .registry import ModuleRegistry
 from .stats import StatsCollector
 
+MAX_DIAGNOSTIC_CORRELATION_IDS = 10
+
 
 @dataclass(slots=True)
 class Diagnostic:
@@ -62,9 +64,15 @@ class DiagnosticsManager:
 
     def to_dict(self) -> dict[str, Any]:
         diagnostics = [diagnostic.to_dict() for diagnostic in self._diagnostics]
+        severity_counts: dict[str, int] = {}
+
+        for diagnostic in diagnostics:
+            severity = diagnostic["severity"]
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         return {
             "count": len(diagnostics),
+            "severityCounts": severity_counts,
             "diagnostics": diagnostics,
         }
 
@@ -101,6 +109,9 @@ class DiagnosticsManager:
 
     def _collect_stats_diagnostics(self, stats: StatsCollector) -> None:
         data = stats.to_dict()
+        timeouts: dict[tuple[Any, ...], dict[str, Any]] = {}
+        handler_errors: dict[tuple[Any, ...], dict[str, Any]] = {}
+        delivery_failures: dict[tuple[Any, ...], dict[str, Any]] = {}
 
         for event in data["recentEvents"]:
             event_type = event.get("type")
@@ -108,48 +119,127 @@ class DiagnosticsManager:
             if event_type == "request.timeout":
                 module = event.get("module")
                 target = event.get("target")
-
-                self.add(
-                    code="REQUEST_TIMEOUT",
-                    severity="warning",
-                    module=module,
-                    message=f"Request from '{module}' to '{target}' timed out",
-                    metadata={
-                        "target": target,
-                        "correlationId": event.get("correlationId"),
-                    },
-                )
+                key = (module, target)
+                self._update_event_group(timeouts, key, event)
 
             elif event_type == "error":
                 module = event.get("module")
                 error = event.get("metadata", {}).get("error")
-
-                self.add(
-                    code="HANDLER_ERROR",
-                    severity="error",
-                    module=module,
-                    message=f"Module '{module}' handler raised an error",
-                    metadata={
-                        "error": error,
-                        "correlationId": event.get("correlationId"),
-                    },
-                )
+                key = (module, error)
+                self._update_event_group(handler_errors, key, event)
 
             elif event_type == "delivery.failure":
                 sender = event.get("sender")
                 target = event.get("target")
                 reason = event.get("metadata", {}).get("reason")
+                key = (sender, target, reason)
+                self._update_event_group(delivery_failures, key, event)
 
-                self.add(
-                    code="DELIVERY_FAILURE",
-                    severity="error",
-                    module=sender,
-                    message=(
-                        f"Message from '{sender}' to '{target}' could not be delivered"
-                    ),
-                    metadata={
-                        "target": target,
-                        "reason": reason,
-                        "correlationId": event.get("correlationId"),
-                    },
-                )
+        self._add_timeout_diagnostics(timeouts)
+        self._add_handler_error_diagnostics(handler_errors)
+        self._add_delivery_failure_diagnostics(delivery_failures)
+
+    @staticmethod
+    def _update_event_group(
+        groups: dict[tuple[Any, ...], dict[str, Any]],
+        key: tuple[Any, ...],
+        event: dict[str, Any],
+    ) -> None:
+        timestamp = event.get("timestamp")
+        correlation_id = event.get("correlationId")
+        group = groups.setdefault(
+            key,
+            {
+                "count": 0,
+                "firstSeen": timestamp,
+                "lastSeen": timestamp,
+                "correlationIds": [],
+                "omittedCorrelationIds": 0,
+            },
+        )
+
+        group["count"] += 1
+
+        if timestamp is not None:
+            if group["firstSeen"] is None or timestamp < group["firstSeen"]:
+                group["firstSeen"] = timestamp
+            if group["lastSeen"] is None or timestamp > group["lastSeen"]:
+                group["lastSeen"] = timestamp
+
+        if correlation_id is None:
+            return
+
+        if len(group["correlationIds"]) < MAX_DIAGNOSTIC_CORRELATION_IDS:
+            group["correlationIds"].append(correlation_id)
+        else:
+            group["omittedCorrelationIds"] += 1
+
+    def _add_timeout_diagnostics(
+        self,
+        groups: dict[tuple[Any, ...], dict[str, Any]],
+    ) -> None:
+        for (module, target), group in groups.items():
+            count = group["count"]
+            message = (
+                f"{count} requests from '{module}' to '{target}' timed out"
+                if count > 1
+                else f"Request from '{module}' to '{target}' timed out"
+            )
+
+            self.add(
+                code="REQUEST_TIMEOUT",
+                severity="warning",
+                module=module,
+                message=message,
+                metadata={
+                    "target": target,
+                    **group,
+                },
+            )
+
+    def _add_handler_error_diagnostics(
+        self,
+        groups: dict[tuple[Any, ...], dict[str, Any]],
+    ) -> None:
+        for (module, error), group in groups.items():
+            count = group["count"]
+            message = (
+                f"Module '{module}' handler raised {count} errors"
+                if count > 1
+                else f"Module '{module}' handler raised an error"
+            )
+
+            self.add(
+                code="HANDLER_ERROR",
+                severity="error",
+                module=module,
+                message=message,
+                metadata={
+                    "error": error,
+                    **group,
+                },
+            )
+
+    def _add_delivery_failure_diagnostics(
+        self,
+        groups: dict[tuple[Any, ...], dict[str, Any]],
+    ) -> None:
+        for (sender, target, reason), group in groups.items():
+            count = group["count"]
+            message = (
+                f"{count} messages from '{sender}' to '{target}' could not be delivered"
+                if count > 1
+                else f"Message from '{sender}' to '{target}' could not be delivered"
+            )
+
+            self.add(
+                code="DELIVERY_FAILURE",
+                severity="error",
+                module=sender,
+                message=message,
+                metadata={
+                    "target": target,
+                    "reason": reason,
+                    **group,
+                },
+            )

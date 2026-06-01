@@ -292,7 +292,7 @@ def test_node_diagnostics_get_command_returns_diagnostics():
             client.stop()
 
 
-def test_node_get_health_command_returns_full_node_state():
+def test_node_get_health_command_returns_compact_node_state():
     with make_test_node("test_node"):
         client = BusInterface(
             "client",
@@ -313,9 +313,41 @@ def test_node_get_health_command_returns_full_node_state():
             assert reply["ok"] is True
             assert reply["nodeId"] == "test_node"
             assert reply["status"] in {"healthy", "degraded", "unhealthy"}
+            assert "summary" in reply
+            assert "modules" in reply["summary"]
+            assert "stats" in reply["summary"]
+            assert "recentMessages" not in reply["summary"]["stats"]
+            assert "registry" not in reply
+            assert "stats" not in reply
+            assert "diagnostics" in reply
+        finally:
+            client.stop()
+
+
+def test_node_get_health_can_include_detailed_node_state():
+    with make_test_node("test_node"):
+        client = BusInterface(
+            "client",
+            reqrep_broker_addr="tcp://127.0.0.1:15560",
+            enable_heartbeat=False,
+        )
+
+        try:
+            reply = client.send_request(
+                "intrabus.node",
+                {
+                    "command": "node.get_health",
+                    "timeoutSeconds": 5,
+                    "includeDetails": True,
+                },
+                timeout=2,
+            )
+
+            assert reply["ok"] is True
+            assert "summary" in reply
             assert "registry" in reply
             assert "stats" in reply
-            assert "diagnostics" in reply
+            assert "recentMessages" in reply["stats"]
         finally:
             client.stop()
 
