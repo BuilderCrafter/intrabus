@@ -18,7 +18,7 @@ The goal is to keep setup simple: install the library, start a `CommunicationNod
 pip install intrabus
 ```
 
-> Current release target: `0.2.0`
+> Current release target: `0.2.1`
 >
 > `intrabus` is still alpha software. The public API is usable, but the project may still evolve before `1.0`.
 
@@ -231,7 +231,7 @@ client.send_request("intrabus.node", {"command": "node.get_diagnostics"})
 
 ### `node.get_health`
 
-Returns a combined node health payload:
+Returns a compact node health payload suitable for monitoring:
 
 ```python
 client.send_request(
@@ -251,10 +251,41 @@ The health response contains:
     "nodeId": "local",
     "status": "healthy",  # healthy | degraded | unhealthy
     "staleModules": [],
-    "registry": {...},
-    "stats": {...},
+    "summary": {
+        "modules": {
+            "total": 2,
+            "online": 2,
+            "offline": 0,
+        },
+        "stats": {
+            "totalMessages": 10,
+            "totalRequests": 5,
+            "totalReplies": 4,
+            "totalTimeouts": 0,
+            "totalErrors": 0,
+            "totalEvents": 1,
+            "totalDeliveryFailures": 0,
+        },
+        "diagnostics": {
+            "count": 0,
+            "severityCounts": {},
+        },
+    },
     "diagnostics": {...},
 }
+```
+
+To include the full registry and raw stats payload, including recent events and
+recent messages, pass `includeDetails`:
+
+```python
+client.send_request(
+    "intrabus.node",
+    {
+        "command": "node.get_health",
+        "includeDetails": True,
+    },
+)
 ```
 
 ### `node.reset_stats`
@@ -324,6 +355,8 @@ Recent messages are bounded and do **not** include full payloads by default. Thi
 ## Diagnostics
 
 `DiagnosticsManager` currently derives diagnostics from registry and stats.
+Repeated recent stats events are grouped into higher-level diagnostics to keep
+monitoring output readable.
 
 Supported diagnostic codes:
 

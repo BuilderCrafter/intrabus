@@ -1,10 +1,7 @@
-"""User‑facing API to intrabus – synchronous version.
+"""User-facing module interface for intrabus communication.
 
-Provides:
-• `publish(topic, data)` / `subscribe(topic, callback)`
-• `send_request(target, payload, timeout)` with correlation‑ID tracking
-
-ZeroMQ socket rules are hidden behind background threads.
+`BusInterface` provides publish/subscribe and request/reply operations while
+hiding ZeroMQ socket ownership behind background threads.
 """
 
 from __future__ import annotations
@@ -31,20 +28,9 @@ from .stats import StatsCollector
 logger = logging.getLogger(__name__)
 
 
-class BusInterface:  # pylint: disable=too-many-instance-attributes
-    """Connect a module to intrabus.
+class BusInterface:
+    """Connect one application module to intrabus."""
 
-    Parameters
-    ----------
-    module_name:
-        Identity shown to the CentralBroker.
-    request_handler:
-        Optional callback executed **when this module receives a request**.
-        Signature::
-            def handler(payload: dict) -> dict | None
-    """
-
-    # ---------------------------------------------------------------------
     def __init__(
         self,
         module_name: str,
@@ -63,20 +49,16 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         self._ctx = zmq.Context()
         self.stats = stats
 
-        # PUB → TopicBroker
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.connect(pubsub_forwarder_sub_addr)
 
-        # SUB ← TopicBroker
         self._sub = self._ctx.socket(zmq.SUB)
         self._sub.connect(pubsub_forwarder_pub_addr)
 
-        # DEALER ↔ CentralBroker
         self._rr = self._ctx.socket(zmq.DEALER)
         self._rr.setsockopt_string(zmq.IDENTITY, module_name)
         self._rr.connect(reqrep_broker_addr)
 
-        # background state
         self._sub_callbacks: dict[str, list[Callable[[str, Any], None]]] = {}
         self._sub_running = True
         self._rr_running = True
@@ -84,18 +66,15 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         self._pending: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-        # threads
         self._sub_thr = threading.Thread(target=self._sub_loop, daemon=True)
         self._sub_thr.start()
         self._io_thr = threading.Thread(target=self._io_loop, daemon=True)
         self._io_thr.start()
 
-        # Auto register node
         self.auto_register = auto_register
         if self.auto_register:
             self._register_with_node()
 
-        # Heartbeat
         self.enable_heartbeat = enable_heartbeat
         self.heartbeat_interval = heartbeat_interval
         self._heartbeat_running = False
@@ -104,11 +83,12 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         if self.enable_heartbeat:
             self._start_heartbeat()
 
-    # ─────────────────────────────── Pub/Sub ──────────────────────────────
     def publish(self, topic: str, message: Any) -> None:
+        """Publish a JSON-serializable message on a topic."""
         self._pub.send_multipart([topic.encode(), json.dumps(message).encode()])
 
     def subscribe(self, topic: str, callback: Callable[[str, Any], None]) -> None:
+        """Subscribe to a topic and call `callback` for matching messages."""
         self._sub.setsockopt_string(zmq.SUBSCRIBE, topic)
         self._sub_callbacks.setdefault(topic, []).append(callback)
 
@@ -144,13 +124,12 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
             except json.JSONDecodeError:
                 payload = {"raw": data_b.decode()}
 
-            for cb in self._sub_callbacks.get(topic, []):
+            for callback in self._sub_callbacks.get(topic, []):
                 try:
-                    cb(topic, payload)
+                    callback(topic, payload)
                 except Exception:
                     logger.exception("Subscriber callback error")
 
-    # ─────────────────────────────── Req/Rep ──────────────────────────────
     def send_request(
         self,
         target: str,
@@ -158,29 +137,31 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         *,
         timeout: float = 1.0,
     ) -> dict[str, Any]:
-        corr = str(uuid.uuid4())
-        payload |= {"correlationId": corr, "sender": self.module_name}
+        """Send a request to another module and wait for its reply."""
+        correlation_id = str(uuid.uuid4())
+        payload |= {"correlationId": correlation_id, "sender": self.module_name}
         frames = [b"", target.encode(), b"", json.dumps(payload).encode()]
 
         started_at = time.perf_counter()
 
         self._tx_queue.put(frames)
 
-        evt = threading.Event()
+        event = threading.Event()
         with self._lock:
-            self._pending[corr] = {"evt": evt, "reply": None}
-        if not evt.wait(timeout):
+            self._pending[correlation_id] = {"evt": event, "reply": None}
+
+        if not event.wait(timeout):
             with self._lock:
-                self._pending.pop(corr, None)
+                self._pending.pop(correlation_id, None)
 
             if self.stats is not None:
                 self.stats.record_timeout(
                     module_name=self.module_name,
                     target=target,
-                    correlation_id=corr,
+                    correlation_id=correlation_id,
                 )
 
-            return {"error": "timeout", "correlationId": corr}
+            return {"error": "timeout", "correlationId": correlation_id}
 
         latency_ms = (time.perf_counter() - started_at) * 1000
 
@@ -189,11 +170,11 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
                 latency_ms=latency_ms,
                 sender=self.module_name,
                 target=target,
-                correlation_id=corr,
+                correlation_id=correlation_id,
             )
 
         with self._lock:
-            reply = self._pending.pop(corr)["reply"]
+            reply = self._pending.pop(correlation_id)["reply"]
         return reply
 
     def _handle_rr_frames(self, frames: list[bytes]) -> None:
@@ -204,44 +185,41 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         raw = frames[3].decode()
 
         try:
-            msg = json.loads(raw)
+            message = json.loads(raw)
         except json.JSONDecodeError:
-            msg = {"raw": raw}
+            message = {"raw": raw}
 
-        corr = msg.get("correlationId")
+        correlation_id = message.get("correlationId")
 
-        # Is it a reply to a request this module sent?
         with self._lock:
-            if corr in self._pending:
-                self._pending[corr]["reply"] = msg
-                self._pending[corr]["evt"].set()
+            if correlation_id in self._pending:
+                self._pending[correlation_id]["reply"] = message
+                self._pending[correlation_id]["evt"].set()
                 return
 
-        # Otherwise treat it as a new incoming request.
         if self.request_handler is None:
             return
 
         try:
-            reply = self.request_handler(msg) or {}
+            reply = self.request_handler(message) or {}
         except Exception as exc:  # noqa: BLE001
             if self.stats is not None:
                 self.stats.record_error(
                     module_name=self.module_name,
                     error=str(exc),
-                    correlation_id=corr,
+                    correlation_id=correlation_id,
                 )
 
             reply = {"error": str(exc)}
 
-        reply |= {"correlationId": corr, "sender": self.module_name}
+        reply |= {"correlationId": correlation_id, "sender": self.module_name}
         self._tx_queue.put([b"", sender.encode(), b"", json.dumps(reply).encode()])
 
-    # ─────────────────────────────── I/O Loop ─────────────────────────────
     def _io_loop(self) -> None:
         poller = zmq.Poller()
         poller.register(self._rr, zmq.POLLIN)
+
         while self._rr_running:
-            # flush outbound
             try:
                 while True:
                     frames = self._tx_queue.get_nowait()
@@ -249,12 +227,10 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
             except Empty:
                 pass
 
-            # poll inbound
             socks = dict(poller.poll(10))
             if self._rr in socks:
                 self._handle_rr_frames(self._rr.recv_multipart())
 
-    # ───────────────────────────── Registration ────────────────────────────
     def _register_with_node(self) -> None:
         """Best-effort registration with the local communication node."""
         reply = self.send_request(
@@ -293,7 +269,6 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
             logger.debug("[%s] communication node not available", self.module_name)
             return
 
-    # ────────────────────────────── Heartbeat ──────────────────────────────
     def _start_heartbeat(self) -> None:
         """Start the heartbeat background thread."""
         if self._heartbeat_running:
@@ -338,8 +313,8 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
                 reply.get("error"),
             )
 
-    # ─────────────────────────────── Cleanup ──────────────────────────────
     def stop(self) -> None:
+        """Stop background threads and release ZeroMQ resources."""
         self._heartbeat_running = False
 
         if self._heartbeat_thr and self._heartbeat_thr.is_alive():
@@ -351,9 +326,9 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
         self._sub_running = False
         self._rr_running = False
 
-        for thr in (self._sub_thr, self._io_thr):
-            if thr.is_alive():
-                thr.join(timeout=1.0)
+        for thread in (self._sub_thr, self._io_thr):
+            if thread.is_alive():
+                thread.join(timeout=1.0)
 
         self._pub.close(0)
         self._sub.close(0)
@@ -362,10 +337,9 @@ class BusInterface:  # pylint: disable=too-many-instance-attributes
 
         logger.info("[%s] interface stopped", self.module_name)
 
-    # allow `with` usage ----------------------------------------------------
-    def __enter__(self):
+    def __enter__(self) -> BusInterface:
         return self
 
-    def __exit__(self, exc_type, exc, tb):  # noqa: D401, ANN001
+    def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
         self.stop()
         return False
