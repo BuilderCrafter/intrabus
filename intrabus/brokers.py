@@ -24,6 +24,10 @@ from .stats import StatsCollector
 
 _logger = logging.getLogger(__name__)
 
+INTRABUS_MESSAGE_TYPE = "__intrabus_type"
+INTRABUS_REQUEST = "request"
+INTRABUS_REPLY = "reply"
+
 
 class TopicBroker:
     """Simple SUB -> PUB forwarder to decouple publishers and subscribers."""
@@ -275,6 +279,12 @@ class CentralBroker:
 
                     if isinstance(decoded_payload, dict):
                         correlation_id = decoded_payload.get("correlationId")
+                        intrabus_type = decoded_payload.get(INTRABUS_MESSAGE_TYPE)
+
+                        if intrabus_type == INTRABUS_REPLY:
+                            message_type = "reply"
+                        elif intrabus_type == INTRABUS_REQUEST:
+                            message_type = "request"
 
                 if decoded_target == INTRABUS_NODE_MODULE:
                     message_type = "system"

@@ -244,6 +244,35 @@ def test_node_stats_get_command_returns_stats():
             client.stop()
 
 
+def test_node_stats_polling_does_not_increment_user_traffic_stats():
+    with make_test_node("test_node"):
+        client = BusInterface(
+            "diagnostics",
+            reqrep_broker_addr="tcp://127.0.0.1:15560",
+            auto_register=False,
+            enable_heartbeat=False,
+        )
+
+        try:
+            for _ in range(3):
+                reply = client.send_request(
+                    "intrabus.node",
+                    {"command": "node.get_stats"},
+                    timeout=2,
+                )
+
+                assert reply["ok"] is True
+
+            stats = reply["stats"]
+            assert stats["totalMessages"] == 0
+            assert stats["totalRequests"] == 0
+            assert stats["totalReplies"] == 0
+            assert stats["perModule"] == {}
+            assert stats["recentMessages"] == []
+        finally:
+            client.stop()
+
+
 def test_node_diagnostics_get_command_returns_diagnostics():
     with make_test_node("test_node") as node:
         module = BusInterface(
