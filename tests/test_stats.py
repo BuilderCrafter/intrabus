@@ -24,6 +24,62 @@ def test_stats_collector_records_message_metadata():
     assert "payload" not in data["recentMessages"][0]
 
 
+def test_stats_collector_ignores_internal_node_management_requests():
+    stats = StatsCollector()
+
+    stats.record_message(
+        message_type="request",
+        sender="diagnostics",
+        target="intrabus.node",
+        correlation_id="abc",
+        payload={"command": "node.get_stats"},
+        direction="reqrep",
+    )
+    stats.record_message(
+        message_type="reply",
+        sender="intrabus.node",
+        target="diagnostics",
+        correlation_id="abc",
+        payload={"ok": True},
+        direction="reqrep",
+    )
+
+    data = stats.to_dict()
+
+    assert data["totalMessages"] == 0
+    assert data["totalRequests"] == 0
+    assert data["totalReplies"] == 0
+    assert data["perModule"] == {}
+    assert data["recentMessages"] == []
+
+
+def test_stats_collector_ignores_internal_timeout_and_latency():
+    stats = StatsCollector()
+
+    payload = {"command": "module.heartbeat"}
+
+    stats.record_timeout(
+        module_name="sensor",
+        target="intrabus.node",
+        correlation_id="abc",
+        payload=payload,
+    )
+    stats.record_latency(
+        latency_ms=4.2,
+        sender="sensor",
+        target="intrabus.node",
+        correlation_id="abc",
+        payload=payload,
+    )
+
+    data = stats.to_dict()
+
+    assert data["totalTimeouts"] == 0
+    assert data["latencySamples"] == 0
+    assert data["perModule"] == {}
+    assert data["recentEvents"] == []
+
+
 def test_stats_collector_can_capture_payloads_when_enabled():
     stats = StatsCollector(capture_payloads=True)
 

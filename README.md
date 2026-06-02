@@ -18,7 +18,7 @@ The goal is to keep setup simple: install the library, start a `CommunicationNod
 pip install intrabus
 ```
 
-> Current release target: `0.2.1`
+> Current release target: `0.2.2`
 >
 > `intrabus` is still alpha software. The public API is usable, but the project may still evolve before `1.0`.
 
@@ -193,6 +193,17 @@ with CommunicationNode():
     client.stop()
 ```
 
+`BusInterface` reserves a few request/reply payload fields for protocol
+metadata:
+
+- `correlationId`
+- `sender`
+- `__intrabus_type`
+
+The `__intrabus_type` marker is added automatically as `"request"` or
+`"reply"`. It prevents late replies from being treated as new application
+requests after node restarts or transient disconnects.
+
 ---
 
 ## Node management commands
@@ -331,7 +342,7 @@ Most application code should use the `node.*` commands.
 
 ## Runtime statistics
 
-`StatsCollector` tracks bounded in-memory runtime statistics:
+`StatsCollector` tracks bounded in-memory application traffic statistics:
 
 - total messages
 - requests
@@ -347,6 +358,11 @@ Most application code should use the `node.*` commands.
 - per-topic stats
 - recent events
 - recent message metadata
+
+User-facing traffic stats intentionally exclude internal node-management
+traffic, including module registration, module heartbeat, registry polling,
+health checks, diagnostics polling, and stats polling. This keeps monitoring
+clients and web dashboards from inflating application message totals.
 
 Recent messages are bounded and do **not** include full payloads by default. This avoids unbounded RAM growth and reduces the risk of accidentally storing sensitive data.
 

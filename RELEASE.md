@@ -49,10 +49,10 @@ Recommended: publish from GitHub Actions using PyPI Trusted Publishing.
 
 ```bash
 git add .
-git commit -m "Prepare intrabus 0.2.1 release"
-git tag v0.2.1
+git commit -m "Prepare intrabus 0.2.2 release"
+git tag v0.2.2
 git push origin main
-git push origin v0.2.1
+git push origin v0.2.2
 ```
 
 ## 7. Verify
@@ -62,7 +62,7 @@ After publishing:
 ```bash
 python -m venv .venv-pypi-test
 source .venv-pypi-test/bin/activate  # Windows: .venv-pypi-test\Scripts\activate
-pip install intrabus==0.2.1
+pip install intrabus==0.2.2
 python -c "from intrabus import CommunicationNode, BusInterface; print('ok')"
 deactivate
 ```

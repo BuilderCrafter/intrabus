@@ -4,6 +4,20 @@ All notable changes to **intrabus** will be documented here.
 
 The project follows semantic versioning while it is in alpha. Public APIs may still evolve before `1.0.0`.
 
+## [0.2.2] - 2026-06-02
+
+### Fixed
+
+- Fixed a request/reply storm that could occur after restarting a `CommunicationNode` while modules with request handlers kept running.
+- Late or stale replies are now dropped when their `correlationId` is no longer pending, instead of being dispatched to request handlers as new requests.
+- Legacy untyped stale replies from `intrabus.node` are now safely dropped for backward compatibility.
+- User-facing statistics no longer count internal node-management traffic such as registration, heartbeat, diagnostics, registry, health, or stats polling commands.
+- Diagnostics and monitor polling no longer inflate `totalMessages`, `totalRequests`, `perModule`, or `perTopic` application traffic stats.
+
+### Changed
+
+- Request/reply payloads now include an internal `__intrabus_type` marker with `"request"` or `"reply"` so replies are never interpreted as application requests.
+
 ## [0.2.1] - 2026-06-02
 
 ### Changed

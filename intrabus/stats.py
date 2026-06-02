@@ -7,6 +7,26 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+from .config import INTRABUS_NODE_MODULE
+
+INTERNAL_COMMANDS = {
+    "module.register",
+    "module.unregister",
+    "module.heartbeat",
+    "node.get_health",
+    "node.get_registry",
+    "node.get_stats",
+    "node.get_diagnostics",
+    "node.reset_stats",
+    "node.clear_diagnostics",
+    "registry.get",
+    "registry.health",
+    "stats.get",
+    "stats.reset",
+    "diagnostics.get",
+    "diagnostics.clear",
+}
+
 
 @dataclass
 class ModuleStats:
@@ -67,6 +87,15 @@ class StatsCollector:
         direction: str | None = None,
         status: str = "ok",
     ) -> None:
+        if self.is_internal_message(
+            message_type=message_type,
+            sender=sender,
+            target=target,
+            payload=payload,
+            direction=direction,
+        ):
+            return
+
         payload_size = self._payload_size(payload)
 
         with self._lock:
@@ -141,7 +170,17 @@ class StatsCollector:
         module_name: str | None = None,
         target: str | None = None,
         correlation_id: str | None = None,
+        payload: Any = None,
     ) -> None:
+        if self.is_internal_message(
+            message_type="request",
+            sender=module_name,
+            target=target,
+            payload=payload,
+            direction="reqrep",
+        ):
+            return
+
         with self._lock:
             self.total_timeouts += 1
 
@@ -166,7 +205,17 @@ class StatsCollector:
         sender: str | None = None,
         target: str | None = None,
         correlation_id: str | None = None,
+        payload: Any = None,
     ) -> None:
+        if self.is_internal_message(
+            message_type="request",
+            sender=sender,
+            target=target,
+            payload=payload,
+            direction="reqrep",
+        ):
+            return
+
         with self._lock:
             self.total_latency_ms += latency_ms
             self.latency_samples += 1
@@ -316,3 +365,22 @@ class StatsCollector:
             return len(json.dumps(payload).encode())
         except TypeError:
             return len(str(payload).encode())
+
+    @staticmethod
+    def is_internal_message(
+        *,
+        message_type: str | None = None,
+        sender: str | None = None,
+        target: str | None = None,
+        payload: Any = None,
+        direction: str | None = None,
+    ) -> bool:
+        if message_type == "system":
+            return True
+
+        if direction == "reqrep" and (
+            sender == INTRABUS_NODE_MODULE or target == INTRABUS_NODE_MODULE
+        ):
+            return True
+
+        return isinstance(payload, dict) and payload.get("command") in INTERNAL_COMMANDS

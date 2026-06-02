@@ -27,6 +27,10 @@ from .stats import StatsCollector
 
 logger = logging.getLogger(__name__)
 
+INTRABUS_MESSAGE_TYPE = "__intrabus_type"
+INTRABUS_REQUEST = "request"
+INTRABUS_REPLY = "reply"
+
 
 class BusInterface:
     """Connect one application module to intrabus."""
@@ -139,8 +143,13 @@ class BusInterface:
     ) -> dict[str, Any]:
         """Send a request to another module and wait for its reply."""
         correlation_id = str(uuid.uuid4())
-        payload |= {"correlationId": correlation_id, "sender": self.module_name}
-        frames = [b"", target.encode(), b"", json.dumps(payload).encode()]
+        request = {
+            **payload,
+            "correlationId": correlation_id,
+            "sender": self.module_name,
+            INTRABUS_MESSAGE_TYPE: INTRABUS_REQUEST,
+        }
+        frames = [b"", target.encode(), b"", json.dumps(request).encode()]
 
         started_at = time.perf_counter()
 
@@ -159,6 +168,7 @@ class BusInterface:
                     module_name=self.module_name,
                     target=target,
                     correlation_id=correlation_id,
+                    payload=request,
                 )
 
             return {"error": "timeout", "correlationId": correlation_id}
@@ -171,6 +181,7 @@ class BusInterface:
                 sender=self.module_name,
                 target=target,
                 correlation_id=correlation_id,
+                payload=request,
             )
 
         with self._lock:
@@ -190,12 +201,39 @@ class BusInterface:
             message = {"raw": raw}
 
         correlation_id = message.get("correlationId")
+        intrabus_type = message.get(INTRABUS_MESSAGE_TYPE)
 
         with self._lock:
             if correlation_id in self._pending:
                 self._pending[correlation_id]["reply"] = message
                 self._pending[correlation_id]["evt"].set()
                 return
+
+        if intrabus_type == INTRABUS_REPLY:
+            logger.debug(
+                "[%s] dropped stale reply from %s for correlationId=%s",
+                self.module_name,
+                sender,
+                correlation_id,
+            )
+            return
+
+        if intrabus_type is None and sender == INTRABUS_NODE_MODULE:
+            logger.debug(
+                "[%s] dropped untyped stale node reply for correlationId=%s",
+                self.module_name,
+                correlation_id,
+            )
+            return
+
+        if intrabus_type not in {None, INTRABUS_REQUEST}:
+            logger.debug(
+                "[%s] dropped unknown intrabus message type %r from %s",
+                self.module_name,
+                intrabus_type,
+                sender,
+            )
+            return
 
         if self.request_handler is None:
             return
@@ -212,7 +250,11 @@ class BusInterface:
 
             reply = {"error": str(exc)}
 
-        reply |= {"correlationId": correlation_id, "sender": self.module_name}
+        reply |= {
+            "correlationId": correlation_id,
+            "sender": self.module_name,
+            INTRABUS_MESSAGE_TYPE: INTRABUS_REPLY,
+        }
         self._tx_queue.put([b"", sender.encode(), b"", json.dumps(reply).encode()])
 
     def _io_loop(self) -> None:
