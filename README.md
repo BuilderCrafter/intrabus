@@ -18,7 +18,7 @@ The goal is to keep setup simple: install the library, start a `CommunicationNod
 pip install intrabus
 ```
 
-> Current release target: `0.2.2`
+> Current release target: `0.2.3`
 >
 > `intrabus` is still alpha software. The public API is usable, but the project may still evolve before `1.0`.
 
@@ -363,6 +363,13 @@ User-facing traffic stats intentionally exclude internal node-management
 traffic, including module registration, module heartbeat, registry polling,
 health checks, diagnostics polling, and stats polling. This keeps monitoring
 clients and web dashboards from inflating application message totals.
+
+Request/reply latency is measured centrally by the request/reply broker using
+matching application `correlationId` values. This means `node.get_stats`
+reports application RTT even when individual modules create `BusInterface`
+instances without passing a `StatsCollector`. Missing targets, timed-out
+requests without replies, and internal node-management commands do not create
+latency samples.
 
 Recent messages are bounded and do **not** include full payloads by default. This avoids unbounded RAM growth and reduces the risk of accidentally storing sensitive data.
 

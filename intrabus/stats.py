@@ -50,6 +50,8 @@ class StatsCollector:
     max_recent_events: int = 1000
     max_recent_messages: int = 500
     capture_payloads: bool = False
+    pending_latency_ttl_seconds: float = 300.0
+    max_pending_latencies: int = 10000
 
     total_messages: int = 0
     total_requests: int = 0
@@ -70,6 +72,10 @@ class StatsCollector:
     recent_messages: deque[dict[str, Any]] = field(init=False)
 
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _pending_latencies: dict[str, tuple[float, str | None, str | None]] = field(
+        default_factory=dict,
+        init=False,
+    )
 
     def __post_init__(self) -> None:
         self.recent_events = deque(maxlen=self.max_recent_events)
@@ -97,8 +103,11 @@ class StatsCollector:
             return
 
         payload_size = self._payload_size(payload)
+        now = time.time()
+        monotonic_now = time.perf_counter()
 
         with self._lock:
+            self._expire_pending_latencies(monotonic_now)
             self.total_messages += 1
 
             if message_type == "event":
@@ -145,6 +154,16 @@ class StatsCollector:
                 "status": status,
             }
 
+            if direction == "reqrep" and correlation_id:
+                self._record_broker_latency(
+                    message_type=message_type,
+                    correlation_id=correlation_id,
+                    sender=sender,
+                    target=target,
+                    now=now,
+                    monotonic_now=monotonic_now,
+                )
+
             if self.capture_payloads:
                 message["payload"] = payload
 
@@ -182,6 +201,9 @@ class StatsCollector:
             return
 
         with self._lock:
+            if correlation_id:
+                self._pending_latencies.pop(correlation_id, None)
+
             self.total_timeouts += 1
 
             if module_name:
@@ -217,21 +239,12 @@ class StatsCollector:
             return
 
         with self._lock:
-            self.total_latency_ms += latency_ms
-            self.latency_samples += 1
-            self.max_latency_ms = max(self.max_latency_ms, latency_ms)
-
-            self.recent_events.append(
-                {
-                    "timestamp": time.time(),
-                    "type": "request.latency",
-                    "sender": sender,
-                    "target": target,
-                    "correlationId": correlation_id,
-                    "metadata": {
-                        "latencyMs": latency_ms,
-                    },
-                }
+            self._record_latency_unlocked(
+                latency_ms=latency_ms,
+                sender=sender,
+                target=target,
+                correlation_id=correlation_id,
+                now=time.time(),
             )
 
     def record_delivery_failure(
@@ -242,7 +255,21 @@ class StatsCollector:
         correlation_id: str | None = None,
         reason: str = "delivery_failed",
     ) -> None:
+        if self.is_internal_message(
+            message_type="error",
+            sender=sender,
+            target=target,
+            direction="reqrep",
+        ):
+            with self._lock:
+                if correlation_id:
+                    self._pending_latencies.pop(correlation_id, None)
+            return
+
         with self._lock:
+            if correlation_id:
+                self._pending_latencies.pop(correlation_id, None)
+
             self.total_delivery_failures += 1
             self.total_errors += 1
 
@@ -303,15 +330,16 @@ class StatsCollector:
             self.per_topic.clear()
             self.recent_events.clear()
             self.recent_messages.clear()
+            self._pending_latencies.clear()
 
     def to_dict(self) -> dict[str, Any]:
-        average_latency_ms = (
-            self.total_latency_ms / self.latency_samples
-            if self.latency_samples
-            else 0.0
-        )
-
         with self._lock:
+            average_latency_ms = (
+                self.total_latency_ms / self.latency_samples
+                if self.latency_samples
+                else 0.0
+            )
+
             return {
                 "totalMessages": self.total_messages,
                 "totalRequests": self.total_requests,
@@ -355,6 +383,83 @@ class StatsCollector:
         if name not in self.per_topic:
             self.per_topic[name] = TopicStats()
         return self.per_topic[name]
+
+    def _record_broker_latency(
+        self,
+        *,
+        message_type: str,
+        correlation_id: str,
+        sender: str | None,
+        target: str | None,
+        now: float,
+        monotonic_now: float,
+    ) -> None:
+        if message_type == "request":
+            self._pending_latencies[correlation_id] = (monotonic_now, sender, target)
+            self._trim_pending_latencies()
+            return
+
+        if message_type != "reply":
+            return
+
+        started = self._pending_latencies.pop(correlation_id, None)
+        if started is None:
+            return
+
+        started_at, request_sender, request_target = started
+        latency_ms = (monotonic_now - started_at) * 1000
+        self._record_latency_unlocked(
+            latency_ms=latency_ms,
+            sender=request_sender,
+            target=request_target,
+            correlation_id=correlation_id,
+            now=now,
+        )
+
+    def _record_latency_unlocked(
+        self,
+        *,
+        latency_ms: float,
+        sender: str | None = None,
+        target: str | None = None,
+        correlation_id: str | None = None,
+        now: float,
+    ) -> None:
+        self.total_latency_ms += latency_ms
+        self.latency_samples += 1
+        self.max_latency_ms = max(self.max_latency_ms, latency_ms)
+
+        self.recent_events.append(
+            {
+                "timestamp": now,
+                "type": "request.latency",
+                "sender": sender,
+                "target": target,
+                "correlationId": correlation_id,
+                "metadata": {
+                    "latencyMs": latency_ms,
+                },
+            }
+        )
+
+    def _expire_pending_latencies(self, now: float) -> None:
+        if self.pending_latency_ttl_seconds <= 0:
+            self._pending_latencies.clear()
+            return
+
+        expired = [
+            correlation_id
+            for correlation_id, (started_at, _, _) in self._pending_latencies.items()
+            if now - started_at > self.pending_latency_ttl_seconds
+        ]
+
+        for correlation_id in expired:
+            self._pending_latencies.pop(correlation_id, None)
+
+    def _trim_pending_latencies(self) -> None:
+        while len(self._pending_latencies) > self.max_pending_latencies:
+            oldest = next(iter(self._pending_latencies))
+            self._pending_latencies.pop(oldest, None)
 
     @staticmethod
     def _payload_size(payload: Any) -> int:
