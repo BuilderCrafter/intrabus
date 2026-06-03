@@ -74,6 +74,19 @@ with CommunicationNode("local"):
 
 ---
 
+## Demo project
+
+For a larger runnable example, see
+[`intrabus_iot_demo`](https://github.com/BuilderCrafter/intrabus_iot_demo).
+
+The demo uses `intrabus` in a local IoT-style system with a communication node,
+dummy modules, sensor-like pub/sub events, request/reply traffic, simulated
+faults, and a FastAPI web monitor dashboard. It is intended to make module
+registration, heartbeats, health checks, runtime statistics, latency, and
+diagnostics visible without requiring real IoT hardware.
+
+---
+
 ## Core concepts
 
 ### CommunicationNode
@@ -500,13 +513,13 @@ uv run twine check dist/*
 Planned future work:
 
 - event/message sinks for streaming to external consumers
-- demo project using this package
-- monitoring dashboard as a separate project
 - richer diagnostics
 - multi-node routing
 - optional dashboard/websocket integrations
 
-The library itself will stay focused on being a general-purpose communication node.
+The library itself will stay focused on being a general-purpose communication
+node. Demo applications and dashboards should remain separate projects unless
+they directly support the core communication API.
 
 ---
 
