@@ -267,8 +267,87 @@ def test_node_stats_polling_does_not_increment_user_traffic_stats():
             assert stats["totalMessages"] == 0
             assert stats["totalRequests"] == 0
             assert stats["totalReplies"] == 0
+            assert stats["latencySamples"] == 0
+            assert stats["averageLatencyMs"] == 0.0
+            assert stats["maxLatencyMs"] == 0.0
             assert stats["perModule"] == {}
             assert stats["recentMessages"] == []
+        finally:
+            client.stop()
+
+
+def test_node_records_app_request_reply_latency():
+    with make_test_node("test_node") as node:
+        server = BusInterface(
+            "jitter_request_server",
+            reqrep_broker_addr="tcp://127.0.0.1:15560",
+            auto_register=False,
+            enable_heartbeat=False,
+            request_handler=lambda message: (
+                time.sleep(0.1)
+                or {
+                    "ok": True,
+                    "requestId": message.get("requestId"),
+                    "delaySeconds": 0.1,
+                }
+            ),
+        )
+        client = BusInterface(
+            "request_client",
+            reqrep_broker_addr="tcp://127.0.0.1:15560",
+            auto_register=False,
+            enable_heartbeat=False,
+        )
+
+        try:
+            time.sleep(0.1)
+
+            for request_id in range(3):
+                reply = client.send_request(
+                    "jitter_request_server",
+                    {"requestId": request_id},
+                    timeout=2,
+                )
+
+                assert reply["ok"] is True
+
+            stats = node.stats.to_dict()
+
+            assert stats["totalRequests"] == 3
+            assert stats["totalReplies"] == 3
+            assert stats["latencySamples"] == 3
+            assert stats["averageLatencyMs"] > 0
+            assert stats["maxLatencyMs"] > 0
+            assert node.stats._pending_latencies == {}
+        finally:
+            server.stop()
+            client.stop()
+
+
+def test_node_missing_request_does_not_record_latency():
+    with make_test_node("test_node") as node:
+        client = BusInterface(
+            "request_client",
+            reqrep_broker_addr="tcp://127.0.0.1:15560",
+            auto_register=False,
+            enable_heartbeat=False,
+        )
+
+        try:
+            reply = client.send_request(
+                "missing_request_server",
+                {"requestId": 1},
+                timeout=0.2,
+            )
+            stats = node.stats.to_dict()
+
+            assert reply["error"] == "timeout"
+            assert stats["totalRequests"] == 1
+            assert stats["totalReplies"] == 0
+            assert stats["latencySamples"] == 0
+            assert stats["averageLatencyMs"] == 0.0
+            assert stats["maxLatencyMs"] == 0.0
+            assert node.stats._pending_latencies == {}
         finally:
             client.stop()
 

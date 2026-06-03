@@ -77,9 +77,9 @@ uv run twine check dist/*
 Then tag and push:
 
 ```bash
-git tag v0.2.2
+git tag v0.2.3
 git push origin main
-git push origin v0.2.2
+git push origin v0.2.3
 ```
 
 The publishing workflow should publish tagged releases to PyPI.

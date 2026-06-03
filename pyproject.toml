@@ -1,6 +1,6 @@
 [project]
 name = "intrabus"
-version = "0.2.2"
+version = "0.2.3"
 description = "General-purpose ZeroMQ communication node with pub/sub, request/reply, registry, heartbeats, stats, and diagnostics"
 readme = "README.md"
 requires-python = ">=3.12"

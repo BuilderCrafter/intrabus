@@ -1,3 +1,5 @@
+import time
+
 from intrabus import StatsCollector
 
 
@@ -27,21 +29,32 @@ def test_stats_collector_records_message_metadata():
 def test_stats_collector_ignores_internal_node_management_requests():
     stats = StatsCollector()
 
-    stats.record_message(
-        message_type="request",
+    for index, command in enumerate(
+        ["node.get_stats", "node.get_health", "module.heartbeat"],
+    ):
+        correlation_id = f"internal-{index}"
+        stats.record_message(
+            message_type="request",
+            sender="diagnostics",
+            target="intrabus.node",
+            correlation_id=correlation_id,
+            payload={"command": command},
+            direction="reqrep",
+        )
+        stats.record_message(
+            message_type="reply",
+            sender="intrabus.node",
+            target="diagnostics",
+            correlation_id=correlation_id,
+            payload={"ok": True},
+            direction="reqrep",
+        )
+
+    stats.record_delivery_failure(
         sender="diagnostics",
         target="intrabus.node",
-        correlation_id="abc",
-        payload={"command": "node.get_stats"},
-        direction="reqrep",
-    )
-    stats.record_message(
-        message_type="reply",
-        sender="intrabus.node",
-        target="diagnostics",
-        correlation_id="abc",
-        payload={"ok": True},
-        direction="reqrep",
+        correlation_id="internal-failure",
+        reason="Host unreachable",
     )
 
     data = stats.to_dict()
@@ -49,6 +62,9 @@ def test_stats_collector_ignores_internal_node_management_requests():
     assert data["totalMessages"] == 0
     assert data["totalRequests"] == 0
     assert data["totalReplies"] == 0
+    assert data["latencySamples"] == 0
+    assert data["totalDeliveryFailures"] == 0
+    assert data["totalErrors"] == 0
     assert data["perModule"] == {}
     assert data["recentMessages"] == []
 
@@ -78,6 +94,88 @@ def test_stats_collector_ignores_internal_timeout_and_latency():
     assert data["latencySamples"] == 0
     assert data["perModule"] == {}
     assert data["recentEvents"] == []
+
+
+def test_stats_collector_records_broker_latency_for_matching_app_reply():
+    stats = StatsCollector()
+
+    stats.record_message(
+        message_type="request",
+        sender="client",
+        target="server",
+        correlation_id="abc",
+        payload={"requestId": 1},
+        direction="reqrep",
+    )
+    time.sleep(0.01)
+    stats.record_message(
+        message_type="reply",
+        sender="server",
+        target="client",
+        correlation_id="abc",
+        payload={"ok": True},
+        direction="reqrep",
+    )
+
+    data = stats.to_dict()
+
+    assert data["totalRequests"] == 1
+    assert data["totalReplies"] == 1
+    assert data["latencySamples"] == 1
+    assert data["averageLatencyMs"] > 0
+    assert data["maxLatencyMs"] > 0
+    assert any(event["type"] == "request.latency" for event in data["recentEvents"])
+    assert stats._pending_latencies == {}
+
+
+def test_stats_collector_clears_pending_latency_on_delivery_failure():
+    stats = StatsCollector()
+
+    stats.record_message(
+        message_type="request",
+        sender="client",
+        target="missing",
+        correlation_id="abc",
+        payload={"requestId": 1},
+        direction="reqrep",
+    )
+
+    assert "abc" in stats._pending_latencies
+
+    stats.record_delivery_failure(
+        sender="client",
+        target="missing",
+        correlation_id="abc",
+        reason="Host unreachable",
+    )
+
+    data = stats.to_dict()
+
+    assert data["latencySamples"] == 0
+    assert stats._pending_latencies == {}
+
+
+def test_stats_collector_trims_pending_latency_entries():
+    stats = StatsCollector(max_pending_latencies=1)
+
+    stats.record_message(
+        message_type="request",
+        sender="client",
+        target="server",
+        correlation_id="old",
+        payload={"requestId": 1},
+        direction="reqrep",
+    )
+    stats.record_message(
+        message_type="request",
+        sender="client",
+        target="server",
+        correlation_id="new",
+        payload={"requestId": 2},
+        direction="reqrep",
+    )
+
+    assert list(stats._pending_latencies) == ["new"]
 
 
 def test_stats_collector_can_capture_payloads_when_enabled():

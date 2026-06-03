@@ -4,6 +4,14 @@ All notable changes to **intrabus** will be documented here.
 
 The project follows semantic versioning while it is in alpha. Public APIs may still evolve before `1.0.0`.
 
+## [0.2.3] - 2026-06-03
+
+### Fixed
+
+- Node-level latency statistics now measure broker-observed application request/reply round-trip time, even when application modules do not pass a `StatsCollector` to `BusInterface`.
+- Pending latency tracking is bounded and cleaned up for requests that time out or cannot be delivered.
+- Internal node-management traffic still does not contribute to user-facing latency statistics.
+
 ## [0.2.2] - 2026-06-02
 
 ### Fixed
